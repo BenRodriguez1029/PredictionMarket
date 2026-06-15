@@ -2,3 +2,23 @@ Venv:
 - requirements.in is the packages i need, requirements.txt is the auto generated lockfile. 
 - To install requirements.txt: pip install -r requirements.txt
 - To reproduce requirements.txt: pip freeze > requirements.txt
+
+
+TMUX: 
+
+- Start
+  tmux new-session -s pmkt        create session
+  conda activate pmkt
+  python -m scheduler
+
+- Detach (leave running)
+  Ctrl+B, D
+
+- Check on it
+  tmux attach -t pmkt             reattach
+  tail -f logs/scheduler.log      view logs without attaching
+
+- Stop
+  tmux attach -t pmkt
+  Ctrl+C                          stop the scheduler
+  tmux kill-session -t pmkt       close the session

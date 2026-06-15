@@ -1,4 +1,3 @@
-"""Central configuration. Reads secrets from .env; never hardcode credentials."""
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -23,5 +22,3 @@ DB_NAME = _require("DB_NAME")
 DB_USER = _require("DB_USER")
 DB_PASSWORD = _require("DB_PASSWORD")
 
-# Polymarket API
-GAMMA_API_BASE = os.getenv("GAMMA_API_BASE", "https://gamma-api.polymarket.com")
