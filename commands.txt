@@ -1,0 +1,4 @@
+Venv: 
+- requirements.in is the packages i need, requirements.txt is the auto generated lockfile. 
+- To install requirements.txt: pip install -r requirements.txt
+- To reproduce requirements.txt: pip freeze > requirements.txt

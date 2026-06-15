@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environments
+venv/
+.venv/
+env/
+
+# Data dumps
+*.csv
+*.parquet
+data/
+*.sqlite
+
+# Jupyter / OS / editor
+.ipynb_checkpoints/
+.DS_Store
+.vscode/

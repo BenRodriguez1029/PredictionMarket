@@ -1,0 +1,11 @@
+psycopg2-binary
+pandas
+numpy
+requests
+python-dotenv
+scipy
+scikit-learn
+statsmodels
+matplotlib
+jupyter
+ipykernel
