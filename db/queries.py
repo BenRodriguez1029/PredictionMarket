@@ -1,5 +1,7 @@
 import psycopg2
 import psycopg2.extras
+import pandas as pd
+from db.connection import get_conn
 
 """
 
@@ -167,3 +169,22 @@ def insert_snapshots(conn, markets: list[dict]) -> None:
 
     with conn.cursor() as cur:
         psycopg2.extras.execute_values(cur, sql, rows)
+
+
+
+def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
+    """
+    Full snapshot history for a given list of market_ids, ordered by time.
+
+    One row per snapshot, not just the latest — used for time-series plots.
+    """
+    sql = """
+        SELECT market_id, best_bid, best_ask, mid_price, spread,
+               volume_24h, liquidity, snapshot_at
+        FROM market_snapshots
+        WHERE market_id = ANY(%s)
+        ORDER BY market_id, snapshot_at
+    """
+    with get_conn() as conn:
+        df = pd.read_sql(sql, conn, params=(market_ids,))
+    return df

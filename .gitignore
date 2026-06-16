@@ -22,3 +22,6 @@ data/
 .DS_Store
 .vscode/
 logs/
+
+# Research Log
+r_log.txt

@@ -22,3 +22,11 @@ DB_NAME = _require("DB_NAME")
 DB_USER = _require("DB_USER")
 DB_PASSWORD = _require("DB_PASSWORD")
 
+
+LIQUIDITY_TIERS = {
+    "tight":       0.02,
+    "medium":      0.05,
+    "wide":        0.10,
+    # anything above the last threshold falls into "untradeable"
+}
+
