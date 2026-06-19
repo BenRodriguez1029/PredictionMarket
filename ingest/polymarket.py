@@ -1,7 +1,8 @@
 import json
 import requests
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import config
 
 """
 
@@ -20,16 +21,19 @@ def _to_float(val) -> float | None:
         return float(val)
     except (ValueError, TypeError):
         return None
-
+    
 
 def _parse_iso(val) -> datetime | None:
-    """Parse an ISO 8601 string to a tz-aware datetime, or return None."""
+    """Parse an ISO 8601 string to a tz-aware UTC datetime, or return None."""
     if not val or not isinstance(val, str):
         return None
     try:
-        return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _parse_json_list(val: str | None, fallback: list | None = None) -> list:
@@ -165,6 +169,9 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
             best_ask = _to_float(market.get("bestAsk"))
             mid_price, spread = _compute_mid_and_spread(best_bid, best_ask)
 
+            # ── Resolution ───────────────────────────────────────────────────
+            resolved, resolved_outcome = _determine_resolution(market)
+
             # ── Outcomes ──────────────────────────────────────────────────────
             outcomes = _parse_outcomes(market)
 
@@ -190,6 +197,10 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
                 "volume":     _to_float(market.get("volume")),
                 "volume_24h": _to_float(market.get("volume24hr")),
 
+                # Resolution
+                "resolved":         resolved,            # added
+                "resolved_outcome": resolved_outcome,    # added
+
                 # Pricing
                 "best_bid":  best_bid,
                 "best_ask":  best_ask,
@@ -204,3 +215,59 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
             })
 
     return formatted_markets
+
+
+# Finaize markets
+
+
+def _determine_resolution(market: dict) -> tuple[bool, int | None]:
+    """
+    Determine whether a market cleanly and finally resolved, and to which outcome.
+
+    Requires ALL of:
+      1. closed == True
+      2. closed at least RESOLUTION_SETTLE_BUFFER_HOURS ago (settlement finalized)
+      3. outcomePrices is a clean near-{1,0} pair (RESOLUTION_THRESHOLD)
+
+    Returns:
+        (True, 1)  -> YES won
+        (True, 0)  -> NO won
+        (False, None) -> not closed / too recent / [0,0] / near-0.5 / malformed
+    """
+    if not market.get("closed"):
+        return False, None
+
+    closed_time = _parse_iso(market.get("closedTime"))
+    if closed_time is None:
+        return False, None
+    if datetime.now(timezone.utc) - closed_time < timedelta(hours=config.RESOLUTION_SETTLE_BUFFER_HOURS):
+        return False, None
+
+    prices = _parse_json_list(market.get("outcomePrices"))
+    floats = [_to_float(p) for p in prices]
+    if len(floats) != 2 or None in floats:
+        return False, None
+
+    yes_price, no_price = floats[0], floats[1]
+    hi = config.RESOLUTION_THRESHOLD
+    lo = 1 - hi
+    if yes_price >= hi and no_price <= lo:
+        return True, 1
+    if yes_price <= lo and no_price >= hi:
+        return True, 0
+    return False, None
+
+
+def fetch_market_by_id(market_id: str) -> dict | None:
+    """
+    Fetch a single market's current state from the Gamma API by ID.
+    Returns the raw market dict, or None on failure.
+    """
+    url = f"https://gamma-api.polymarket.com/markets/{market_id}"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as e:
+        print(f"[resolution] failed to fetch {market_id}: {e}")
+        return None

@@ -1,7 +1,8 @@
 from db.connection import get_conn
 from db.schema import create_tables
-from db.queries import upsert_markets, upsert_outcomes, insert_snapshots
-from ingest.polymarket import get_polymarket_data, normalize_polymarket_data
+from db.queries import upsert_markets, upsert_outcomes, insert_snapshots, update_resolutions
+from ingest.polymarket import get_polymarket_data, normalize_polymarket_data, fetch_market_by_id, _determine_resolution
+import config 
 
 """
 
@@ -65,6 +66,52 @@ def run_ingest(limit: int = 1000) -> None:
 
     markets = normalize_polymarket_data(df)
     ingest(markets)
+
+
+def check_resolutions(batch_limit: int = 500) -> None:
+    """
+    For tracked markets not yet resolved, re-fetch their state and update
+    resolved/resolved_outcome if they've now cleanly resolved.
+
+    Pre-filters by event_time before hitting the API:
+      - skips markets too recent to have settled (within the settle buffer)
+      - skips markets so old that non-resolution implies junk (> max age)
+    """
+    sql_select = """
+        SELECT market_id FROM markets
+        WHERE (resolved IS NULL OR resolved = false)
+          AND event_time IS NOT NULL
+          AND event_time <= NOW() - (INTERVAL '1 hour' * %s)
+          AND event_time >= NOW() - (INTERVAL '1 day'  * %s)
+        ORDER BY event_time DESC
+        LIMIT %s
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql_select, (
+            config.RESOLUTION_SETTLE_BUFFER_HOURS,
+            config.RESOLUTION_MAX_AGE_DAYS,
+            batch_limit,
+        ))
+        market_ids = [row[0] for row in cur.fetchall()]
+
+    if not market_ids:
+        print("[resolution] nothing to check")
+        return
+
+    newly_resolved = []
+    for market_id in market_ids:
+        raw = fetch_market_by_id(market_id)
+        if raw is None:
+            continue
+        resolved, outcome = _determine_resolution(raw)
+        if resolved:
+            newly_resolved.append((resolved, outcome, market_id))
+
+    with get_conn() as conn:
+        update_resolutions(conn, newly_resolved)
+        conn.commit()
+
+    print(f"[resolution] checked {len(market_ids)}, marked {len(newly_resolved)} resolved")
 
 
 if __name__ == "__main__":

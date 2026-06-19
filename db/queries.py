@@ -47,6 +47,8 @@ def upsert_markets(conn, markets: list[dict]) -> None:
             m.get("event_time"),
             m.get("active"),
             m.get("closed"),
+            m.get("resolved"),           
+            m.get("resolved_outcome"),  
             m.get("liquidity"),
             m.get("volume"),
             m.get("volume_24h"),
@@ -62,7 +64,8 @@ def upsert_markets(conn, markets: list[dict]) -> None:
     sql = """
         INSERT INTO markets
             (source, event_id, market_id, title, description, event_time,
-             active, closed, liquidity, volume, volume_24h,
+             active, closed, resolved, resolved_outcome,
+             liquidity, volume, volume_24h,
              best_bid, best_ask, mid_price, spread, updated_at)
         VALUES %s
         ON CONFLICT (market_id) DO UPDATE SET
@@ -73,7 +76,9 @@ def upsert_markets(conn, markets: list[dict]) -> None:
             event_time  = EXCLUDED.event_time,
             active      = EXCLUDED.active,
             closed      = EXCLUDED.closed,
-            liquidity   = EXCLUDED.liquidity,
+            resolved         = EXCLUDED.resolved,
+            resolved_outcome = EXCLUDED.resolved_outcome,
+            liquidity        = EXCLUDED.liquidity,
             volume      = EXCLUDED.volume,
             volume_24h  = EXCLUDED.volume_24h,
             best_bid    = EXCLUDED.best_bid,
@@ -171,6 +176,22 @@ def insert_snapshots(conn, markets: list[dict]) -> None:
         psycopg2.extras.execute_values(cur, sql, rows)
 
 
+def update_resolutions(conn, updates: list[tuple]) -> None:
+    """
+    Mark markets resolved. updates is a list of (resolved, outcome, market_id) tuples.
+    """
+    if not updates:
+        return
+    sql = """
+        UPDATE markets
+        SET resolved = %s, resolved_outcome = %s, updated_at = NOW()
+        WHERE market_id = %s
+    """
+    with conn.cursor() as cur:
+        cur.executemany(sql, updates)
+
+
+# Reads
 
 def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
     """
@@ -188,3 +209,24 @@ def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
     with get_conn() as conn:
         df = pd.read_sql(sql, conn, params=(market_ids,))
     return df
+
+
+def get_resolved_markets(conn) -> list[dict]:
+    """
+    Fetch all cleanly-resolved markets with their outcome and resolution time.
+
+    Returns one dict per market: market_id, resolved_outcome, event_time.
+    event_time is the resolution reference point for horizon matching.
+    """
+    sql = """
+        SELECT market_id, resolved_outcome, event_time
+        FROM markets
+        WHERE resolved = true
+          AND resolved_outcome IS NOT NULL
+          AND event_time IS NOT NULL
+        ORDER BY event_time DESC
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
