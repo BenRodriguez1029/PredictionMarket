@@ -1,7 +1,7 @@
 from db.connection import get_conn
 from db.schema import create_tables
 from db.queries import upsert_markets, upsert_outcomes, insert_snapshots, update_resolutions
-from ingest.polymarket import get_polymarket_data, normalize_polymarket_data, fetch_market_by_id, _determine_resolution
+from ingest.polymarket import get_polymarket_data, normalize_polymarket_data, fetch_market_by_id, _determine_resolution, _parse_iso
 import config 
 
 """
@@ -31,6 +31,13 @@ def ingest(markets: list[dict]) -> None:
     if not markets:
         print("[db] nothing to ingest")
         return
+    
+    # erase duplicates
+    seen = {}
+    for m in markets:
+        seen[m["market_id"]] = m
+    markets = list(seen.values())
+
 
     with get_conn() as conn:
         upsert_markets(conn, markets)
@@ -66,6 +73,7 @@ def run_ingest(limit: int = 1000) -> None:
 
     markets = normalize_polymarket_data(df)
     ingest(markets)
+    return len(markets)
 
 
 def check_resolutions(batch_limit: int = 500) -> None:
@@ -99,19 +107,24 @@ def check_resolutions(batch_limit: int = 500) -> None:
         return
 
     newly_resolved = []
-    for market_id in market_ids:
+    for i, market_id in enumerate(market_ids, 1):
         raw = fetch_market_by_id(market_id)
         if raw is None:
             continue
         resolved, outcome = _determine_resolution(raw)
         if resolved:
-            newly_resolved.append((resolved, outcome, market_id))
+            closed_time = _parse_iso(raw.get("closedTime"))   # added
+            newly_resolved.append((resolved, outcome, closed_time, market_id))
+        if i % 100 == 0:
+            print(f"[resolution] {i}/{len(market_ids)} checked, {len(newly_resolved)} resolved so far")
 
     with get_conn() as conn:
         update_resolutions(conn, newly_resolved)
         conn.commit()
 
     print(f"[resolution] checked {len(market_ids)}, marked {len(newly_resolved)} resolved")
+
+    return market_ids, newly_resolved
 
 
 if __name__ == "__main__":

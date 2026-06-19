@@ -75,19 +75,19 @@ def run_scheduler(
 
         # Snapshot ingest
         try:
-            run_ingest(limit=limit)
-            log.info(f"Run #{run_number} complete")
+            num_markets = run_ingest(limit=limit)
+            log.info(f"Run #{run_number} complete: {num_markets} markets ingested.")
         except Exception as e:
             log.error(f"Run #{run_number} failed: {e}", exc_info=True)
 
         # Daily resolution check — runs if 24h have passed since the last one
         now = datetime.now(timezone.utc)
         if last_resolution_check is None or (now - last_resolution_check) >= timedelta(hours=24):
-            log.info("Running daily resolution check...")
+            log.info("Running daily resolution check")
             try:
-                check_resolutions(batch_limit=resolution_limit)
+                checked, newly_resolved = check_resolutions(batch_limit=resolution_limit)
                 last_resolution_check = now
-                log.info("Resolution check complete")
+                log.info(f"Resolution check complete: {len(checked)} checked, {len(newly_resolved)} resolved")
             except Exception as e:
                 # Don't update last_resolution_check on failure — retry next loop
                 log.error(f"Resolution check failed: {e}", exc_info=True)

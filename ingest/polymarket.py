@@ -191,6 +191,7 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
                 # Market state
                 "active": market.get("active"),
                 "closed": market.get("closed"),
+                "closed_time":      _parse_iso(market.get("closedTime")), 
 
                 # Liquidity / volume
                 "liquidity":  _to_float(market.get("liquidity")),

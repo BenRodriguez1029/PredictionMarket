@@ -1,4 +1,6 @@
+import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from datetime import timedelta
 from db.connection import get_conn
 from db.queries import get_resolved_markets, get_snapshot_history
@@ -35,7 +37,9 @@ def find_observation_snapshot(
     in_window = history[
         (history["snapshot_at"] >= target_time - window) &
         (history["snapshot_at"] <= target_time + window) &
-        (history["snapshot_at"] < resolution_time)   # look-ahead guard
+        (history["snapshot_at"] < resolution_time) &
+        (history["mid_price"].notna()) &
+        (history["active"] == True)  # look-ahead guard
     ]
 
     if in_window.empty:
@@ -79,13 +83,13 @@ def build_calibration_data(
     for market_id, hist in history_all.groupby("market_id"):
         info = resolution_by_id[market_id]
         snap = find_observation_snapshot(
-            hist, info["event_time"], horizon_days, wiggle_hours
+            hist, info["resolution_time"], horizon_days, wiggle_hours
         )
         if snap is None:
             n_no_window += 1
             continue
 
-        actual_days_before = (info["event_time"] - snap["snapshot_at"]).total_seconds() / 86400.0
+        actual_days_before = (info["resolution_time"] - snap["snapshot_at"]).total_seconds() / 86400.0
         rows.append({
             "market_id": market_id,
             "observation_price": snap["mid_price"],
@@ -101,3 +105,72 @@ def build_calibration_data(
         f"{n_no_window} dropped (no snapshot in window)"
     )
     return result
+
+
+def calibration_curve(calibration_data: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
+    """
+    Bin observations by observation_price and compute the empirical YES rate per bin.
+
+    Returns one row per non-empty bin with:
+      bin_mid           - nominal bin center (for the diagonal reference)
+      mean_price        - actual mean observation price in the bin (better x than bin_mid)
+      empirical_yes     - fraction that resolved YES
+      n                 - number of markets in the bin
+      se                - standard error of empirical_yes (for error bars)
+    """
+    df = calibration_data.dropna(subset=["observation_price", "outcome"]).copy()
+
+    edges = np.linspace(0, 1, n_bins + 1)
+    df["bin"] = pd.cut(df["observation_price"], bins=edges, include_lowest=True)
+
+    grouped = df.groupby("bin", observed=True).agg(
+        mean_price=("observation_price", "mean"),
+        empirical_yes=("outcome", "mean"),
+        n=("outcome", "size"),
+    ).reset_index()
+
+    # Bin midpoint from the interval, and binomial standard error of the YES rate
+    grouped["bin_mid"] = grouped["bin"].apply(lambda iv: (iv.left + iv.right) / 2)
+    grouped["se"] = np.sqrt(
+        grouped["empirical_yes"] * (1 - grouped["empirical_yes"]) / grouped["n"]
+    )
+    return grouped
+
+
+def plot_calibration(curve: pd.DataFrame, title: str = "Calibration") -> None:
+    """
+    Plot observed price vs empirical YES rate, with the perfect-calibration diagonal.
+    Point size encodes bin count; error bars show binomial standard error.
+    """
+    fig, ax = plt.subplots(figsize=(7, 7))
+
+    # Perfect calibration reference
+    ax.plot([0, 1], [0, 1], color="gray", linestyle="--", label="perfect calibration")
+
+    # Empirical points — x is the actual mean price in the bin, not the bin center
+    ax.errorbar(
+        curve["mean_price"], curve["empirical_yes"],
+        yerr=curve["se"], fmt="o", capsize=3, color="C0", label="empirical",
+    )
+
+    # Size points by sample count so thin bins are visually de-emphasized
+    ax.scatter(
+        curve["mean_price"], curve["empirical_yes"],
+        s=curve["n"] * 8, alpha=0.3, color="C0",
+    )
+
+    # Annotate each point with its n, so you can see which bins to distrust
+    for _, row in curve.iterrows():
+        ax.annotate(f"n={int(row['n'])}",
+                    (row["mean_price"], row["empirical_yes"]),
+                    textcoords="offset points", xytext=(6, 6), fontsize=8)
+
+    ax.set_xlabel("Observed Market Price")
+    ax.set_ylabel("Empirical YES Rate")
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_aspect("equal")
+    ax.legend(loc="upper left")
+    ax.set_title(title)
+    plt.tight_layout()
+    plt.show()

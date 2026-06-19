@@ -47,6 +47,7 @@ def upsert_markets(conn, markets: list[dict]) -> None:
             m.get("event_time"),
             m.get("active"),
             m.get("closed"),
+            m.get("closed_time"),
             m.get("resolved"),           
             m.get("resolved_outcome"),  
             m.get("liquidity"),
@@ -64,7 +65,7 @@ def upsert_markets(conn, markets: list[dict]) -> None:
     sql = """
         INSERT INTO markets
             (source, event_id, market_id, title, description, event_time,
-             active, closed, resolved, resolved_outcome,
+             active, closed, closed_time, resolved, resolved_outcome,
              liquidity, volume, volume_24h,
              best_bid, best_ask, mid_price, spread, updated_at)
         VALUES %s
@@ -76,6 +77,7 @@ def upsert_markets(conn, markets: list[dict]) -> None:
             event_time  = EXCLUDED.event_time,
             active      = EXCLUDED.active,
             closed      = EXCLUDED.closed,
+            closed_time      = EXCLUDED.closed_time,
             resolved         = EXCLUDED.resolved,
             resolved_outcome = EXCLUDED.resolved_outcome,
             liquidity        = EXCLUDED.liquidity,
@@ -178,13 +180,14 @@ def insert_snapshots(conn, markets: list[dict]) -> None:
 
 def update_resolutions(conn, updates: list[tuple]) -> None:
     """
-    Mark markets resolved. updates is a list of (resolved, outcome, market_id) tuples.
+    Mark markets resolved. updates is a list of
+    (resolved, outcome, closed_time, market_id) tuples.
     """
     if not updates:
         return
     sql = """
         UPDATE markets
-        SET resolved = %s, resolved_outcome = %s, updated_at = NOW()
+        SET resolved = %s, resolved_outcome = %s, closed_time = %s, updated_at = NOW()
         WHERE market_id = %s
     """
     with conn.cursor() as cur:
@@ -201,7 +204,7 @@ def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
     """
     sql = """
         SELECT market_id, best_bid, best_ask, mid_price, spread,
-               volume_24h, liquidity, snapshot_at
+               volume_24h, liquidity, snapshot_at, active
         FROM market_snapshots
         WHERE market_id = ANY(%s)
         ORDER BY market_id, snapshot_at
@@ -213,18 +216,21 @@ def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
 
 def get_resolved_markets(conn) -> list[dict]:
     """
-    Fetch all cleanly-resolved markets with their outcome and resolution time.
+    Fetch cleanly-resolved markets with outcome and resolution anchor time.
 
-    Returns one dict per market: market_id, resolved_outcome, event_time.
-    event_time is the resolution reference point for horizon matching.
+    resolution_time = closed_time when available, else event_time (fallback).
+    closed_time is the actual settlement anchor; event_time is the scheduled
+    event conclusion, which can be later than actual resolution.
     """
     sql = """
-        SELECT market_id, resolved_outcome, event_time
+        SELECT market_id, resolved_outcome,
+               COALESCE(closed_time, event_time) AS resolution_time,
+               closed_time, event_time
         FROM markets
         WHERE resolved = true
           AND resolved_outcome IS NOT NULL
-          AND event_time IS NOT NULL
-        ORDER BY event_time DESC
+          AND COALESCE(closed_time, event_time) IS NOT NULL
+        ORDER BY resolution_time DESC
     """
     with conn.cursor() as cur:
         cur.execute(sql)
