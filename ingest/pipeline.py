@@ -1,6 +1,6 @@
 from db.connection import get_conn
 from db.schema import create_tables
-from db.queries import upsert_markets, upsert_outcomes, insert_snapshots, update_resolutions
+from db.queries import get_resolved_market_ids, upsert_markets, upsert_outcomes, insert_snapshots, update_resolutions
 from ingest.polymarket import get_polymarket_data, normalize_polymarket_data, fetch_market_by_id, _determine_resolution, _parse_iso
 import config 
 
@@ -42,10 +42,16 @@ def ingest(markets: list[dict]) -> None:
     with get_conn() as conn:
         upsert_markets(conn, markets)
         upsert_outcomes(conn, markets)
-        insert_snapshots(conn, markets)
+
+
+        resolved_ids = get_resolved_market_ids(conn)
+        fresh = [m for m in markets if m["market_id"] not in resolved_ids]
+        skipped = len(markets) - len(fresh)
+        insert_snapshots(conn, fresh)
+
         conn.commit()
 
-    print(f"[db] ingested {len(markets)} markets")
+    print(f"[db] ingested {len(markets)} markets ({skipped} snapshot-skipped as resolved)")
 
 
 # Full pipeline

@@ -236,3 +236,13 @@ def get_resolved_markets(conn) -> list[dict]:
         cur.execute(sql)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+    
+
+def get_resolved_market_ids(conn) -> set:
+    """
+    Set of market_ids already marked resolved — used to skip them in live ingest
+    so we stop accumulating post-resolution junk snapshots.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT market_id FROM markets WHERE resolved = true")
+        return {row[0] for row in cur.fetchall()}
