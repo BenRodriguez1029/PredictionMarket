@@ -30,6 +30,7 @@ def create_tables(conn) -> None:
                 market_id       TEXT        NOT NULL UNIQUE,
                 title           TEXT,
                 description     TEXT,
+                category        TEXT,
                 event_time      TIMESTAMPTZ,
                 active          BOOLEAN,
                 closed          BOOLEAN,   

@@ -44,6 +44,7 @@ def upsert_markets(conn, markets: list[dict]) -> None:
             m["market_id"],
             m.get("title"),
             m.get("description"),
+            m.get("category"),
             m.get("event_time"),
             m.get("active"),
             m.get("closed"),
@@ -64,7 +65,7 @@ def upsert_markets(conn, markets: list[dict]) -> None:
 
     sql = """
         INSERT INTO markets
-            (source, event_id, market_id, title, description, event_time,
+            (source, event_id, market_id, title, description, category, event_time,
              active, closed, closed_time, resolved, resolved_outcome,
              liquidity, volume, volume_24h,
              best_bid, best_ask, mid_price, spread, updated_at)
@@ -74,6 +75,7 @@ def upsert_markets(conn, markets: list[dict]) -> None:
             event_id    = EXCLUDED.event_id,
             title       = EXCLUDED.title,
             description = EXCLUDED.description,
+            category    = COALESCE(markets.category, EXCLUDED.category),
             event_time  = EXCLUDED.event_time,
             active      = EXCLUDED.active,
             closed      = EXCLUDED.closed,
@@ -225,7 +227,7 @@ def get_resolved_markets(conn) -> list[dict]:
     sql = """
         SELECT market_id, resolved_outcome,
                COALESCE(closed_time, event_time) AS resolution_time,
-               closed_time, event_time
+               closed_time, event_time, category
         FROM markets
         WHERE resolved = true
           AND resolved_outcome IS NOT NULL

@@ -1,7 +1,7 @@
 from db.connection import get_conn
 from db.schema import create_tables
 from db.queries import get_resolved_market_ids, upsert_markets, upsert_outcomes, insert_snapshots, update_resolutions
-from ingest.polymarket import get_polymarket_data, normalize_polymarket_data, fetch_market_by_id, _determine_resolution, _parse_iso
+from ingest.polymarket import _extract_category, get_polymarket_data, normalize_polymarket_data, fetch_market_by_id, _determine_resolution, _parse_iso
 import config 
 
 """
@@ -135,3 +135,133 @@ def check_resolutions(batch_limit: int = 500) -> None:
 
 if __name__ == "__main__":
     run_ingest(limit=1000)
+
+
+
+
+import requests
+from db.connection import get_conn
+import config
+ 
+ 
+# ---- category extraction ---------------------------------------------------
+ 
+def _extract_category(event: dict) -> str | None:
+    """
+    Pick one broad category from an event's tags.
+ 
+    Returns the first label found in config.CATEGORY_PRIORITY; else
+    config.CATEGORY_FALLBACK if the event has tags but none match; else
+    None if the event has no tags at all.
+    """
+    tags = event.get("tags") or []
+    labels = {t.get("label") for t in tags if t.get("label")}
+    if not labels:
+        return None
+    for category in config.CATEGORY_PRIORITY:
+        if category in labels:
+            return category
+    return config.CATEGORY_FALLBACK
+ 
+ 
+# ---- event fetching --------------------------------------------------------
+ 
+def _fetch_events_page(offset: int, limit: int, closed: bool, archived: bool) -> list[dict]:
+    """Fetch one page of events. Returns [] on error or empty."""
+    url = "https://gamma-api.polymarket.com/events"
+    params = {
+        "limit": limit,
+        "offset": offset,
+        "closed": str(closed).lower(),
+        "archived": str(archived).lower(),
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as e:
+        print(f"[category] events fetch failed at offset {offset}: {e}")
+        return []
+ 
+ 
+# ---- main backfill ---------------------------------------------------------
+ 
+def backfill_categories(max_events_per_bucket: int = 50000, page_size: int = 100) -> None:
+    """
+    Backfill markets.category from event tags. Safe to re-run (only touches
+    markets where category IS NULL).
+    """
+    # 1. Which markets still need a category? Store as a set of strings.
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT market_id FROM markets WHERE category IS NULL")
+        needed = {str(row[0]) for row in cur.fetchall()}
+ 
+    if not needed:
+        print("[category] nothing to backfill — all markets categorized")
+        return
+    print(f"[category] {len(needed)} markets need a category")
+ 
+    # 2. Scan events across all three visibility buckets, collecting matches.
+    updates: dict[str, str] = {}   # market_id -> category
+    buckets = [
+        ("open",            dict(closed=False, archived=False)),
+        ("closed",          dict(closed=True,  archived=False)),
+        ("closed+archived", dict(closed=True,  archived=True)),
+    ]
+ 
+    for label, flags in buckets:
+        print(f"[category] scanning {label} events...")
+        offset = 0
+        while offset < max_events_per_bucket:
+            events = _fetch_events_page(offset, page_size, **flags)
+            if not events:
+                break
+ 
+            for ev in events:
+                category = _extract_category(ev)
+                if not category:
+                    continue
+                for m in (ev.get("markets") or []):
+                    mid = str(m.get("id"))
+                    if mid in needed and mid not in updates:
+                        updates[mid] = category
+ 
+            offset += page_size
+            if offset % 1000 == 0:
+                print(f"[category]   {label}: scanned {offset} events, "
+                      f"{len(updates)} matched so far")
+ 
+    if not updates:
+        print("[category] no matching categories found — nothing written")
+        return
+ 
+    print(f"[category] matched {len(updates)} markets; writing...")
+ 
+    # 3. Write, counting rows ACTUALLY changed (not attempted).
+    sql = "UPDATE markets SET category = %s, updated_at = NOW() WHERE market_id = %s"
+    changed = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for mid, cat in updates.items():
+            cur.execute(sql, (cat, mid))
+            changed += cur.rowcount
+        conn.commit()
+ 
+    print(f"[category] committed — {changed} rows actually updated "
+          f"(matched {len(updates)})")
+ 
+    if changed == 0:
+        print("[category] WARNING: 0 rows changed despite matches. "
+              "market_id values from events do not equal stored market_id. "
+              "Check a sample below.")
+ 
+    # 4. Verify by re-reading the distribution.
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT COALESCE(category, 'NULL') AS category, COUNT(*)
+            FROM markets
+            GROUP BY category
+            ORDER BY COUNT(*) DESC
+        """)
+        print("[category] current distribution:")
+        for cat, n in cur.fetchall():
+            print(f"    {cat:20s} {n}")

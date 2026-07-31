@@ -41,3 +41,20 @@ RESOLUTION_MAX_AGE_DAYS = 90
 # Data Calibration
 OBSERVATION_HORIZON_DAYS = 7      # observe price this many days before resolution
 OBSERVATION_TOLERANCE_HOURS = 12     # accept a snapshot within +/- this many hours of the target
+
+# Data Categories
+CATEGORY_PRIORITY = [
+    "Sports",
+    "Politics",
+    "Crypto",
+    "Geopolitics",
+    "Business",
+    "Finance",
+    "Tech",
+    "Pop Culture",
+    "Science",
+]
+CATEGORY_FALLBACK = "Other"
+
+#Log space
+LOGIT_EPS = 1e-10

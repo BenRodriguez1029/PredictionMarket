@@ -158,24 +158,25 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
 
     for _, row in df.iterrows():
         event_id = row.get("id")
+        event_category = _extract_category(row)
 
         markets = row.get("markets")
         if not isinstance(markets, list):
             continue
 
         for market in markets:
-            # ── Pricing ───────────────────────────────────────────────────────
+            # Pricing
             best_bid = _to_float(market.get("bestBid"))
             best_ask = _to_float(market.get("bestAsk"))
             mid_price, spread = _compute_mid_and_spread(best_bid, best_ask)
 
-            # ── Resolution ───────────────────────────────────────────────────
+            # Resolution
             resolved, resolved_outcome = _determine_resolution(market)
 
-            # ── Outcomes ──────────────────────────────────────────────────────
+            # Outcomes
             outcomes = _parse_outcomes(market)
 
-            # ── Assemble ──────────────────────────────────────────────────────
+            # Assemble dict
             formatted_markets.append({
                 "source":   "polymarket",
 
@@ -187,6 +188,7 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
                 "title":       market.get("question"),
                 "description": market.get("description"),
                 "event_time":  _parse_iso(market.get("endDate")),
+                "category": event_category,  
 
                 # Market state
                 "active": market.get("active"),
@@ -199,8 +201,8 @@ def normalize_polymarket_data(df: pd.DataFrame) -> list[dict]:
                 "volume_24h": _to_float(market.get("volume24hr")),
 
                 # Resolution
-                "resolved":         resolved,            # added
-                "resolved_outcome": resolved_outcome,    # added
+                "resolved":         resolved,            
+                "resolved_outcome": resolved_outcome,
 
                 # Pricing
                 "best_bid":  best_bid,
@@ -272,3 +274,22 @@ def fetch_market_by_id(market_id: str) -> dict | None:
     except requests.RequestException as e:
         print(f"[resolution] failed to fetch {market_id}: {e}")
         return None
+    
+
+def _extract_category(event: dict) -> str | None:
+    """
+    Pick one broad category from an event's tags.
+
+    Tags are a list of dicts with 'label'. Events usually carry several
+    (broad + specific). Returns the first label in config.CATEGORY_PRIORITY,
+    else config.CATEGORY_FALLBACK if the event has tags but none match,
+    else None if the event has no tags at all.
+    """
+    tags = event.get("tags") or []
+    labels = {t.get("label") for t in tags if t.get("label")}
+    if not labels:
+        return None
+    for category in config.CATEGORY_PRIORITY:
+        if category in labels:
+            return category
+    return config.CATEGORY_FALLBACK

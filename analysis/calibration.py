@@ -96,6 +96,7 @@ def build_calibration_data(
             "observation_time": snap["snapshot_at"],
             "days_before_resolution": actual_days_before,
             "outcome": info["resolved_outcome"],
+            "category": info.get("category"),
         })
 
     result = pd.DataFrame(rows)
