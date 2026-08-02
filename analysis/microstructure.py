@@ -1,5 +1,5 @@
 import pandas as pd
-from db.connection import get_conn
+from db.connection import get_engine, get_conn
 import config
 import numpy as np
 
@@ -35,8 +35,8 @@ def get_current_spreads() -> pd.DataFrame:
         WHERE m.active = true AND m.closed = false
         ORDER BY s.market_id, s.snapshot_at DESC
     """
-    with get_conn() as conn:
-        df = pd.read_sql(sql, conn)
+
+    df = pd.read_sql(sql, get_engine())
     return df
 
 

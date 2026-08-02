@@ -1,7 +1,7 @@
 import psycopg2
 import psycopg2.extras
 import pandas as pd
-from db.connection import get_conn
+from db.connection import get_engine, get_conn
 
 """
 
@@ -211,8 +211,8 @@ def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
         WHERE market_id = ANY(%s)
         ORDER BY market_id, snapshot_at
     """
-    with get_conn() as conn:
-        df = pd.read_sql(sql, conn, params=(market_ids,))
+
+    df = pd.read_sql(sql, get_engine(), params=(market_ids,))
     return df
 
 

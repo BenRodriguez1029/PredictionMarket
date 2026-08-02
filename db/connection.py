@@ -2,7 +2,21 @@
 from contextlib import contextmanager
 import psycopg2
 import config
+from sqlalchemy import create_engine
 
+# SQLAlchemy engine
+_engine = None
+
+def get_engine():
+    """Return a shared SQLAlchemy engine (created lazily on first use)."""
+    global _engine
+    if _engine is None:
+        url = (
+            f"postgresql+psycopg2://{config.DB_USER}:{config.DB_PASSWORD}"
+            f"@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}"
+        )
+        _engine = create_engine(url)
+    return _engine
 
 @contextmanager
 def get_conn():
