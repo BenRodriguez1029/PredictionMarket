@@ -11,8 +11,7 @@ the caller (pipeline.py) owns the transaction so a failure rolls the whole batch
 
 """
 
-
-# Writes
+# ----Writes----
 
 def upsert_markets(conn, markets: list[dict]) -> None:
     """
@@ -196,7 +195,302 @@ def update_resolutions(conn, updates: list[tuple]) -> None:
         cur.executemany(sql, updates)
 
 
-# Reads
+# ----Reads----
+
+# General
+
+_MARKET_COLS_ALL = [
+    "market_id", "event_id", "title", "description", "category",
+    "event_time", "closed_time", "active", "closed", "resolved",
+    "resolved_outcome", "liquidity", "volume", "volume_24h",
+    "best_bid", "best_ask", "mid_price", "spread",
+    "first_seen_at", "updated_at",
+]
+ 
+_SNAPSHOT_COLS_ALL = [
+    "market_id", "snapshot_at", "best_bid", "best_ask", "mid_price",
+    "spread", "volume_24h", "liquidity", "active",
+]
+ 
+_MARKET_COLS_DEFAULT = [
+    "market_id", "event_id", "title", "description", "category",
+    "event_time", "closed_time", "active", "closed", "resolved",
+    "resolved_outcome", "liquidity", "volume", "volume_24h",
+    "best_bid", "best_ask", "mid_price", "spread",
+]
+
+_SNAPSHOT_COLS_DEFAULT = _SNAPSHOT_COLS_ALL
+
+
+def _resolve_columns(columns, allowed: list[str], default: list[str],
+                     prefix: str = "") -> str:
+    """
+    Validate a requested column list against an allowlist and return a
+    comma-separated SQL string. `columns` may be a list, a comma-separated
+    string, or None (uses default).
+    """
+    if columns is None:
+        cols = default
+    elif isinstance(columns, str):
+        cols = [c.strip() for c in columns.split(",") if c.strip()]
+    else:
+        cols = list(columns)
+ 
+    bad = [c for c in cols if c not in allowed]
+    if bad:
+        raise ValueError(f"Unknown/disallowed columns: {bad}. Allowed: {allowed}")
+ 
+    return ", ".join(f"{prefix}{c}" for c in cols)
+
+
+#Markets - by explicit ID list
+
+def get_markets_by_ids(market_ids: list[str], columns=None) -> pd.DataFrame:
+    """
+    Fetch market metadata rows for an explicit list of market_ids.
+ 
+    Parameters
+    ----------
+    market_ids : list[str]
+        Exact markets to fetch. Empty list returns an empty DataFrame.
+    columns : list[str] or str, optional
+        Which columns to return. Default: the standard market column set.
+    """
+    if not market_ids:
+        return pd.DataFrame()
+    col_sql = _resolve_columns(columns, _MARKET_COLS_ALL, _MARKET_COLS_DEFAULT)
+    sql = f"""
+        SELECT {col_sql}
+        FROM markets
+        WHERE market_id = ANY(%s)
+    """
+    
+    return pd.read_sql(sql, get_engine(), params=(list(market_ids),))
+ 
+ 
+# Markets — by filter
+ 
+def get_markets_by_filter(
+    resolved: bool = None,
+    category=None,
+    closed: bool = None,
+    active: bool = None,
+    has_outcome: bool = None,
+    columns=None,
+) -> pd.DataFrame:
+    """
+    Fetch market metadata rows matching the given criteria. All filters are
+    optional; None means "don't filter on this". Filters combine with AND.
+ 
+    Parameters
+    ----------
+    resolved : bool, optional
+        Restrict to resolved (True) or not-yet-resolved (False) markets.
+    category : str or list[str], optional
+        Restrict to one category or any of several.
+    closed : bool, optional
+        Restrict by the closed flag.
+    active : bool, optional
+        Restrict by the active flag.
+    has_outcome : bool, optional
+        If True, require resolved_outcome IS NOT NULL; if False, IS NULL.
+    columns : list[str] or str, optional
+        Which columns to return. Default: the standard market column set.
+    """
+    col_sql = _resolve_columns(columns, _MARKET_COLS_ALL, _MARKET_COLS_DEFAULT)
+ 
+    conditions = []
+    params = []
+ 
+    if resolved is not None:
+        conditions.append("resolved = %s")
+        params.append(resolved)
+    if category is not None:
+        cats = [category] if isinstance(category, str) else list(category)
+        conditions.append("category = ANY(%s)")
+        params.append(cats)
+    if closed is not None:
+        conditions.append("closed = %s")
+        params.append(closed)
+    if active is not None:
+        conditions.append("active = %s")
+        params.append(active)
+    if has_outcome is not None:
+        conditions.append(
+            "resolved_outcome IS NOT NULL" if has_outcome
+            else "resolved_outcome IS NULL"
+        )
+ 
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    sql = f"""
+        SELECT {col_sql}
+        FROM markets
+        WHERE {where}
+    """
+    return pd.read_sql(sql, get_engine(), params=params)
+ 
+ 
+# Snapshots — by explicit ID list
+ 
+def get_snapshots_by_ids(
+    market_ids: list[str],
+    start=None,
+    end=None,
+    usable_only: bool = True,
+    columns=None,
+) -> pd.DataFrame:
+    """
+    Fetch snapshot history for an explicit list of market_ids, ordered by
+    (market_id, snapshot_at) so it's ready to group and analyze.
+ 
+    Parameters
+    ----------
+    market_ids : list[str]
+        Exact markets to fetch snapshots for.
+    start, end : datetime, optional
+        Time window on snapshot_at.
+    usable_only : bool
+        If True, only rows with a non-null mid_price.
+    columns : list[str] or str, optional
+        Which columns to return. Default: the standard snapshot column set.
+    """
+    if not market_ids:
+        return pd.DataFrame()
+ 
+    col_sql = _resolve_columns(columns, _SNAPSHOT_COLS_ALL,
+                               _SNAPSHOT_COLS_DEFAULT, prefix="s.")
+ 
+    conditions = ["s.market_id = ANY(%s)"]
+    params = [list(market_ids)]
+ 
+    if usable_only:
+        conditions.append("s.mid_price IS NOT NULL")
+    if start is not None:
+        conditions.append("s.snapshot_at >= %s")
+        params.append(start)
+    if end is not None:
+        conditions.append("s.snapshot_at <= %s")
+        params.append(end)
+ 
+    where = " AND ".join(conditions)
+    sql = f"""
+        SELECT {col_sql}
+        FROM market_snapshots s
+        WHERE {where}
+        ORDER BY s.market_id, s.snapshot_at
+    """
+    return pd.read_sql(sql, get_engine(), params=params)
+ 
+ 
+# Snapshots — by filter
+ 
+def get_snapshots_by_filter(
+    resolved: bool = None,
+    category=None,
+    has_outcome: bool = None,
+    min_snaps: int = None,
+    min_range: float = None,
+    start=None,
+    end=None,
+    usable_only: bool = True,
+    columns=None,
+) -> pd.DataFrame:
+    """
+    Fetch snapshots for markets matching the given criteria — filtering markets
+    and returning their snapshot data in a SINGLE query (no id round-trip).
+ 
+    Market-level filters (resolved, category, has_outcome, min_snaps, min_range)
+    decide WHICH markets; snapshot-level filters (start, end, usable_only) decide
+    WHICH rows. Result is ordered by (market_id, snapshot_at).
+ 
+    Parameters
+    ----------
+    resolved : bool, optional
+        Restrict to resolved / unresolved markets.
+    category : str or list[str], optional
+        Restrict to one or several categories.
+    has_outcome : bool, optional
+        Require resolved_outcome present (True) or absent (False).
+    min_snaps : int, optional
+        Market must have at least this many usable snapshots.
+    min_range : float, optional
+        Market's mid_price must have spanned at least this range.
+    start, end : datetime, optional
+        Time window on snapshot_at.
+    usable_only : bool
+        If True, only rows with a non-null mid_price.
+    columns : list[str] or str, optional
+        Which snapshot columns to return. Default: the standard snapshot set.
+ 
+    Notes
+    -----
+    Parameter order matters: values are appended in the exact order their
+    placeholders appear in the assembled SQL. Do not reorder the blocks below
+    without re-checking the params list stays aligned.
+    """
+    col_sql = _resolve_columns(columns, _SNAPSHOT_COLS_ALL,
+                               _SNAPSHOT_COLS_DEFAULT, prefix="s.")
+ 
+    conditions = []
+    params = []
+ 
+    # snapshot-level filters (outer query)
+    if usable_only:
+        conditions.append("s.mid_price IS NOT NULL")
+    if start is not None:
+        conditions.append("s.snapshot_at >= %s")
+        params.append(start)
+    if end is not None:
+        conditions.append("s.snapshot_at <= %s")
+        params.append(end)
+ 
+    # market-level attribute filters (via join)
+    if resolved is not None:
+        conditions.append("m.resolved = %s")
+        params.append(resolved)
+    if category is not None:
+        cats = [category] if isinstance(category, str) else list(category)
+        conditions.append("m.category = ANY(%s)")
+        params.append(cats)
+    if has_outcome is not None:
+        conditions.append(
+            "m.resolved_outcome IS NOT NULL" if has_outcome
+            else "m.resolved_outcome IS NULL"
+        )
+ 
+    # market-level aggregate filters (via subquery)
+    if min_snaps is not None or min_range is not None:
+        having = []
+        if min_snaps is not None:
+            having.append("COUNT(*) >= %s")
+        if min_range is not None:
+            having.append("MAX(mid_price) - MIN(mid_price) >= %s")
+        conditions.append(f"""
+            s.market_id IN (
+                SELECT market_id
+                FROM market_snapshots
+                WHERE mid_price IS NOT NULL
+                GROUP BY market_id
+                HAVING {" AND ".join(having)}
+            )
+        """)
+        if min_snaps is not None:
+            params.append(min_snaps)
+        if min_range is not None:
+            params.append(min_range)
+ 
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    sql = f"""
+        SELECT {col_sql}
+        FROM market_snapshots s
+        JOIN markets m ON m.market_id = s.market_id
+        WHERE {where}
+        ORDER BY s.market_id, s.snapshot_at
+    """
+    return pd.read_sql(sql, get_engine(), params=params)
+
+
+# Specialized
 
 def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
     """
@@ -216,7 +510,7 @@ def get_snapshot_history(market_ids: list[str]) -> pd.DataFrame:
     return df
 
 
-def get_resolved_markets(conn) -> list[dict]:
+def get_resolved_markets(conn) -> list[dict]: # Have newer function for this, but keep until we rework old analysis code
     """
     Fetch cleanly-resolved markets with outcome and resolution anchor time.
 
@@ -248,3 +542,4 @@ def get_resolved_market_ids(conn) -> set:
     with conn.cursor() as cur:
         cur.execute("SELECT market_id FROM markets WHERE resolved = true")
         return {row[0] for row in cur.fetchall()}
+    

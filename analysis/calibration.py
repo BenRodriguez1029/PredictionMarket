@@ -4,7 +4,9 @@ import matplotlib.pyplot as plt
 from datetime import timedelta
 from db.connection import get_conn
 from db.queries import get_resolved_markets, get_snapshot_history
+from db.load import load_resolved_markets, load_market_history
 import config
+
 
 
 def find_observation_snapshot(
@@ -64,19 +66,23 @@ def build_calibration_data(
     Markets with no snapshot in the tolerance window are dropped.
 
     Returns a DataFrame: market_id, observation_price, observation_time,
-    days_before_resolution, outcome.
+    days_before_resolution, outcome, category.
     """
-    with get_conn() as conn:
-        resolved = get_resolved_markets(conn)
-        if not resolved:
-            print("[calibration] no resolved markets found")
-            return pd.DataFrame()
+    resolved = load_resolved_markets()
+    if resolved.empty:
+        print("[calibration] no resolved markets found")
+        return pd.DataFrame()
 
-        market_ids = [m["market_id"] for m in resolved]
-        history_all = get_snapshot_history(market_ids) 
+    market_ids = resolved["market_id"].tolist()
+    history_all = load_market_history(market_ids)
+    if history_all.empty:
+        print("[calibration] no snapshot history for resolved markets")
+        return pd.DataFrame()
 
     # Index resolution info by market_id for lookup
-    resolution_by_id = {m["market_id"]: m for m in resolved}
+    resolution_by_id = {
+        row["market_id"]: row for _, row in resolved.iterrows()
+    }
 
     rows = []
     n_no_window = 0
@@ -89,7 +95,9 @@ def build_calibration_data(
             n_no_window += 1
             continue
 
-        actual_days_before = (info["resolution_time"] - snap["snapshot_at"]).total_seconds() / 86400.0
+        actual_days_before = (
+            info["resolution_time"] - snap["snapshot_at"]
+        ).total_seconds() / 86400.0
         rows.append({
             "market_id": market_id,
             "observation_price": snap["mid_price"],
@@ -106,7 +114,6 @@ def build_calibration_data(
         f"{n_no_window} dropped (no snapshot in window)"
     )
     return result
-
 
 def calibration_curve(calibration_data: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
     """
