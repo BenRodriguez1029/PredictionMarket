@@ -1,0 +1,149 @@
+The time_series.py functions, in depth
+to_logit(p, eps) and from_logit(x)
+
+Purpose: convert between probability space [0,1] and log-odds space (−∞, +∞). to_logit maps price → log-odds; from_logit is the exact inverse.
+
+Motivation: everything downstream in Module 3 operates in log-odds because probability space is bounded and distorts near 0 and 1 (a move from 0.98→0.99 is the same "distance" as 0.50→0.51 in price but represents far more information). Log-odds stretches the extremes so a "constant amount of evidence" is a constant-size step regardless of where you are on the scale — which is what makes the statistical machinery (stationarity, autocorrelation, AR models) valid.
+
+When to use: to_logit whenever you need the log-odds of a price directly. from_logit when converting a modeled log-odds value back to a probability for interpretation. The eps clip prevents log(0) = −∞ at the boundaries — critical for your boundary-snapped markets sitting at 0.001 or 0.999.
+
+
+
+add_logit(df, price_col)
+
+Purpose: takes a DataFrame with a price column, returns a copy with a logit column added.
+
+Motivation/when: this is the "do the transform once, up front" function. Rather than every analysis function recomputing the logit internally, you call add_logit once after loading, and the column is there for everything. It's group-agnostic (just adds a column), so it works on the whole flat multi-market DataFrame in one call. Use it immediately after load.
+
+
+
+logit_diffs(df, min_len, min_std)
+
+Purpose: takes one market's DataFrame, returns the first differences of its log-odds series (the step-to-step changes) as a NumPy array. Returns empty if too short or degenerate.
+
+Motivation: this is the single most important helper, because the differences are the stationary series you actually analyze. Recall from the ADF work: log-odds levels drift (non-stationary), but changes wander around zero (stationary). Every autocorrelation and AR computation runs on these differences, not the levels. The min_std guard is what kills the divide-by-zero and singular-matrix errors — a market that never moved has all-zero differences (zero variance), which breaks the math, so those return empty and get skipped.
+
+When to use: it's the input-preparation step inside every per-market analysis (fit_ar1, plot_acf_pacf, etc. all call it). You rarely call it directly, but understanding it is key: everything downstream is about the structure of these differences.
+
+
+
+has_real_movement(df, min_range, min_changes)
+
+Purpose: boolean test of whether one market moved enough to be worth analyzing — checks its price range spanned at least min_range and it changed at least min_changes times.
+
+Motivation: boundary-parked markets (stuck at 0.98) and placeholder markets (never traded) have no time-series structure to find, and including them dilutes your aggregate results with meaningless near-zero autocorrelations. This is the filter that restricts analysis to markets with genuine dynamics. Its a selection choice — you're studying "markets that moved," which is the right population for dynamics, but you should state that scoping in your log.
+
+When to use: as a pre-filter when building your analysis set, either in load_movers (which bakes the movement criteria into the SQL) or applied per-market when you want finer control.
+
+
+
+plot_price_and_logit(df)
+
+Purpose (simple): side-by-side plot of one market's history in price space vs. log-odds space. Shows visually how the logit transform stretches movement near the boundaries.
+
+When: exploratory, to see what the transform does to a specific market. Pick a market that swung widely and the stretch is obvious.
+
+
+
+adf_test(series)
+
+Purpose: runs the Augmented Dickey-Fuller test on any 1-D array, returns the statistic, p-value, lag count, and a stationarity flag.
+
+Motivation: it's the pure primitive — takes an array, tests for a unit root (non-stationarity), returns the verdict. Kept separate from the market-specific wrappers so it's reusable on any series (levels, differences, or anything else).
+
+When: whenever you need a stationarity verdict on a series. The wrappers (adf_report, adf_summary) call it; you'd call it directly only for an ad-hoc series.
+
+
+
+adf_report(df)
+
+Purpose: runs ADF on one market's log-odds levels and differences, prints both verdicts.
+
+Motivation: confirms the expected pattern for a single market — levels non-stationary (drift toward resolution), differences stationary (changes wander around zero). It's the per-market diagnostic that justifies working in differenced space.
+
+When: to inspect one market's stationarity in detail, usually while exploring or debugging a market that looks odd.
+
+
+
+adf_summary(df_all)
+
+Purpose: runs the levels-vs-differences ADF test across many markets (groups internally), reports what fraction are stationary in each.
+
+Motivation: one market confirming the pattern could be a fluke; this shows it holds broadly. When you saw "18.5% levels stationary, 91.9% differences stationary," that's this function proving the differencing approach is valid across your whole dataset, not just cherry-picked markets. This is the actual acceptance-criterion evidence for the stationarity task.
+
+When: once, to validate that differencing is the right move before building all the autocorrelation/AR analysis on top of it.
+
+
+
+plot_acf_pacf(df, nlags)
+
+Purpose (moderate): plots the ACF and PACF of one market's log-odds changes, with significance bands.
+
+Motivation: the ACF shows total autocorrelation at each lag (is there momentum/reversion, and how far does it persist); the PACF shows the direct effect at each lag (how many lags genuinely matter — answers "is this AR(1) or higher order"). Side by side, ACF decaying while PACF cuts off sharply after lag 1 is the signature of AR(1) structure. Crucially, it lets you see whether negative autocorrelation is concentrated at lag 1-2 (bounce) or persists (real reversion) — the central question for your results.
+
+When: to diagnose the structure of a specific market, especially to check whether the negative autocorrelation dies fast (bounce) or extends (signal).
+
+
+
+lag1_autocorr_distribution(df_all)
+
+Purpose: computes lag-1 autocorrelation for every market (groups internally), reports the distribution — mean, median, fraction positive, fraction significantly positive/negative.
+
+Motivation: individual market ACFs are noisy; the distribution across hundreds reveals the systematic tendency. This is what tells you whether Polymarket price changes, on average, show momentum, mean reversion, or look efficient. It's the aggregate deliverable — one market means nothing, the distribution means everything.
+
+When: to characterize the overall autocorrelation tendency of your market universe.
+
+
+
+plot_lag1_distribution(df)
+
+Purpose (simple): histogram of the per-market lag-1 autocorrelations from the function above.
+
+When: to see the distribution's shape — is it a clean cluster around one value, or spread out.
+
+
+
+fit_ar1(df)
+
+The p_value in fit_ar1 (and the significance test in the autocorrelation functions) is answering one specific question: "if this market's price changes were actually random — no predictable structure at all — how likely is it that I'd see an AR(1) coefficient this large just by chance?"
+
+So:
+
+Low p-value (< 0.05) = the coefficient is unlikely to be a fluke = the structure is probably real. This is what significant=True means.
+High p-value (> 0.05) = the coefficient could easily just be noise = you can't distinguish this market from random.
+
+Purpose: fits an AR(1) model to one market's log-odds changes, returns the coefficient φ, its p-value, and significance.
+
+Motivation: AR(1) is the simplest model of predictable structure — "this change = φ × last change + noise." φ > 0 means momentum, φ < 0 means mean reversion, φ ≈ 0 means efficient/unpredictable. It's the single-number summary of how much (and what kind of) predictable structure a market has.
+
+When: to quantify one market's predictability, or (via the ranking wrapper) across many.
+
+
+
+rank_by_predictability(df_all)
+
+Purpose: fits AR(1) across all markets (groups internally), ranks them by how much significant predictable structure they have.
+
+Motivation: identifies which markets have the strongest exploitable time-series structure. If a strategy is viable, these are the markets to trade. The aggregate stats (fraction significant, mean φ) also characterize the whole universe.
+
+When: to find the most predictable markets and to summarize the universe's overall predictability.
+
+
+
+compare_ar_orders(df, max_order)
+
+Purpose: fits AR(1) through AR(max_order) on one market, compares them by AIC/BIC to find the parsimony-preferred order.
+
+Motivation: directly answers "is AR(1) enough, or does this market need higher order?" If BIC prefers order 1, AR(1) genuinely suffices; if it prefers 3, there's deeper structure. This is the tool that tests, rather than assumes, the AR(1) choice.
+
+When: when you suspect a market has richer dynamics than AR(1) captures, or to justify the AR(1) baseline for a specific market.
+
+
+
+ar_order_survey(df_all)
+
+Purpose: finds each market's BIC-preferred AR order across many markets, tabulates how often each order wins.
+
+Motivation: the empirical, universe-wide answer to "does AR(1) suffice generally?" If order 1 dominates, AR(1) is justified; if higher orders are common, the baseline underfits. It's how you decide whether to stick with AR(1) or let the order be data-selected in later modules.
+
+When: once, to settle whether AR(1) is an adequate baseline for your data as a whole.

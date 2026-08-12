@@ -1,0 +1,21 @@
+OK heres the results. Filtering is: [post-resolution] dropped 9387 rows at/after resolution [liquidity] 4047 markets -> 574 in tiers ['medium', 'tight'] (3473 dropped) relative_spread untradeable    3147 medium          379 wide            326 tight           195.  For adf summary i got: 574 markets tested   levels stationary:      20.2%   differences stationary: 88.7%   (expect: levels mostly NON-stationary, differences mostly stationary). Got divide by zero warning in log too a couple times. n=4302 changes, significance band = +/- 0.030 lag-1 ACF = -0.347   lag-1 PACF = -0.347 574 markets   mean lag-1 ACF   = -0.0454   median lag-1 ACF = -0.0643   fraction positive = 33.8%   fraction significantly positive (>+0.035) = 25.4%  [momentum]   fraction significantly negative (<-0.035) = 57.3%  [reversion / bounce]. Then for autocorr vs freq: 574 markets — mean lag-1 autocorrelation by sampling frequency:
+
+   30min: mean = -0.0476   (n=574)
+
+      1h: mean = -0.0399   (n=574)
+
+      2h: mean = -0.0597   (n=562)
+
+      4h: mean = -0.0908   (n=541)
+
+      8h: mean = -0.1067   (n=502)
+
+      1d: mean = -0.0965   (n=361)
+
+      2d: mean = -0.1197   (n=290)
+
+      4d: mean = +nan   (n=0)
+
+  -> If it moves toward 0 as frequency coarsens, it's bid-ask bounce.
+
+  -> If it stays strongly negative at the coarsest, it may be real. Then for the against the spread code. 

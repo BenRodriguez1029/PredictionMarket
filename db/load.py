@@ -1,10 +1,10 @@
 import pandas as pd
-from db.connection import get_engine
 from db.queries import (
     get_markets_by_ids,
     get_markets_by_filter,
     get_snapshots_by_ids,
     get_snapshots_by_filter,
+    get_latest_snapshots,
 )
 
 """
@@ -21,7 +21,7 @@ general and unchanged, add specific functions here
 # Movement-based loads
 
 def load_movers(min_range: float = 0.02, min_snaps: int = 50,
-                columns=None) -> pd.DataFrame:
+                columns=None, limit=None) -> pd.DataFrame:
     """
     Snapshots for markets that genuinely moved — price spanned at least
     `min_range` over their life, with at least `min_snaps` usable snapshots.
@@ -33,6 +33,7 @@ def load_movers(min_range: float = 0.02, min_snaps: int = 50,
         min_snaps=min_snaps,
         usable_only=True,
         columns=columns,
+        limit=limit
     )
 
 
@@ -44,7 +45,7 @@ def load_market_history(market_ids: list, columns=None) -> pd.DataFrame:
     return get_snapshots_by_ids(market_ids, usable_only=True, columns=columns)
 
 
-def load_resolved_markets(category=None) -> pd.DataFrame:
+def load_resolved_markets(category=None, limit=None) -> pd.DataFrame:
     """
     Cleanly-resolved markets with a usable outcome, plus a resolution_time
     anchor = COALESCE(closed_time, event_time). This is the anchor used to place
@@ -59,6 +60,7 @@ def load_resolved_markets(category=None) -> pd.DataFrame:
         category=category,
         columns=["market_id", "category", "resolved_outcome",
                  "closed_time", "event_time"],
+        limit=limit
     )
     if df.empty:
         return df
@@ -69,7 +71,7 @@ def load_resolved_markets(category=None) -> pd.DataFrame:
 
 
 def load_resolved_with_history(category=None, min_snaps: int = 1,
-                               columns=None) -> pd.DataFrame:
+                               columns=None, limit=None) -> pd.DataFrame:
     """
     Snapshots for cleanly-resolved markets. Fetches the snapshot data in one
     query; join against load_resolved_markets() if you also need the outcome
@@ -85,11 +87,12 @@ def load_resolved_with_history(category=None, min_snaps: int = 1,
         min_snaps=min_snaps,
         usable_only=True,
         columns=columns,
+        limit=limit
     )
 
 
 def load_by_category(category, resolved: bool = None,
-                     min_snaps: int = None, columns=None) -> pd.DataFrame:
+                     min_snaps: int = None, columns=None, limit=None) -> pd.DataFrame:
     """
     Snapshots for markets in one category or several. Optionally restrict to
     resolved markets and/or a minimum history length.
@@ -100,35 +103,24 @@ def load_by_category(category, resolved: bool = None,
         min_snaps=min_snaps,
         usable_only=True,
         columns=columns,
+        limit=limit
     )
 
 
-def load_recent(days: int, columns=None) -> pd.DataFrame:
+def load_recent(days: int, columns=None, limit=None) -> pd.DataFrame:
     """
     All usable snapshots from the last `days` days. Useful for live-signal work
     where only recent data matters.
     """
     from datetime import datetime, timezone, timedelta
     start = datetime.now(timezone.utc) - timedelta(days=days)
-    return get_snapshots_by_filter(start=start, usable_only=True, columns=columns)
+    return get_snapshots_by_filter(start=start, usable_only=True, columns=columns, limit=limit)
 
 
 def load_current_spreads(active_only: bool = True) -> pd.DataFrame:
     """
-    Latest bid/ask/mid/spread per market — the most recent snapshot only, not
-    full history. Defaults to currently active, open markets.
-
-    Uses DISTINCT ON (a latest-per-group query), which the general snapshot
-    fetchers don't do, so it's a focused specialized loader.
+    Latest bid/ask/mid/spread per market — the most recent snapshot only.
+    Defaults to currently active, open markets. Named wrapper for the common
+    "current spreads snapshot" intent.
     """
-    where = "WHERE m.active = true AND m.closed = false" if active_only else ""
-    sql = f"""
-        SELECT DISTINCT ON (s.market_id)
-            s.market_id, m.title, s.best_bid, s.best_ask,
-            s.mid_price, s.spread, s.volume_24h, s.liquidity, s.snapshot_at
-        FROM market_snapshots s
-        JOIN markets m ON m.market_id = s.market_id
-        {where}
-        ORDER BY s.market_id, s.snapshot_at DESC
-    """
-    return pd.read_sql(sql, get_engine())
+    return get_latest_snapshots(active_only=active_only)

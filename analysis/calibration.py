@@ -115,6 +115,7 @@ def build_calibration_data(
     )
     return result
 
+
 def calibration_curve(calibration_data: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
     """
     Bin observations by observation_price and compute the empirical YES rate per bin.

@@ -265,7 +265,7 @@ def get_markets_by_ids(market_ids: list[str], columns=None) -> pd.DataFrame:
         WHERE market_id = ANY(%s)
     """
     
-    return pd.read_sql(sql, get_engine(), params=(list(market_ids),))
+    return pd.read_sql(sql, get_engine(), params=(tuple(market_ids),))
  
  
 # Markets — by filter
@@ -277,6 +277,7 @@ def get_markets_by_filter(
     active: bool = None,
     has_outcome: bool = None,
     columns=None,
+    limit: int = None,
 ) -> pd.DataFrame:
     """
     Fetch market metadata rows matching the given criteria. All filters are
@@ -296,6 +297,8 @@ def get_markets_by_filter(
         If True, require resolved_outcome IS NOT NULL; if False, IS NULL.
     columns : list[str] or str, optional
         Which columns to return. Default: the standard market column set.
+    limit : int, optional
+        Limit the number of rows returned.
     """
     col_sql = _resolve_columns(columns, _MARKET_COLS_ALL, _MARKET_COLS_DEFAULT)
  
@@ -322,12 +325,19 @@ def get_markets_by_filter(
         )
  
     where = " AND ".join(conditions) if conditions else "TRUE"
+
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = "LIMIT %s"
+        params.append(limit)
+
     sql = f"""
         SELECT {col_sql}
         FROM markets
         WHERE {where}
+        {limit_sql}
     """
-    return pd.read_sql(sql, get_engine(), params=params)
+    return pd.read_sql(sql, get_engine(), params=tuple(params))
  
  
 # Snapshots — by explicit ID list
@@ -379,7 +389,7 @@ def get_snapshots_by_ids(
         WHERE {where}
         ORDER BY s.market_id, s.snapshot_at
     """
-    return pd.read_sql(sql, get_engine(), params=params)
+    return pd.read_sql(sql, get_engine(), params=tuple(params))
  
  
 # Snapshots — by filter
@@ -394,6 +404,7 @@ def get_snapshots_by_filter(
     end=None,
     usable_only: bool = True,
     columns=None,
+    limit: int = None,
 ) -> pd.DataFrame:
     """
     Fetch snapshots for markets matching the given criteria — filtering markets
@@ -421,6 +432,8 @@ def get_snapshots_by_filter(
         If True, only rows with a non-null mid_price.
     columns : list[str] or str, optional
         Which snapshot columns to return. Default: the standard snapshot set.
+    limit : int, optional
+        Limit the number of DISTINCT markets returned.
  
     Notes
     -----
@@ -458,27 +471,36 @@ def get_snapshots_by_filter(
             else "m.resolved_outcome IS NULL"
         )
  
-    # market-level aggregate filters (via subquery)
-    if min_snaps is not None or min_range is not None:
+    # market-level aggregate filters
+    if min_snaps is not None or min_range is not None or limit is not None:
         having = []
         if min_snaps is not None:
             having.append("COUNT(*) >= %s")
         if min_range is not None:
             having.append("MAX(mid_price) - MIN(mid_price) >= %s")
+        having_sql = f"HAVING {' AND '.join(having)}" if having else ""
+        limit_sql = "LIMIT %s" if limit is not None else ""
+
         conditions.append(f"""
             s.market_id IN (
                 SELECT market_id
                 FROM market_snapshots
                 WHERE mid_price IS NOT NULL
                 GROUP BY market_id
-                HAVING {" AND ".join(having)}
+                {having_sql}
+                ORDER BY market_id
+                {limit_sql}
             )
         """)
+
+        # subquery params in placeholder order
         if min_snaps is not None:
             params.append(min_snaps)
         if min_range is not None:
             params.append(min_range)
- 
+        if limit is not None:
+            params.append(limit)
+
     where = " AND ".join(conditions) if conditions else "TRUE"
     sql = f"""
         SELECT {col_sql}
@@ -487,7 +509,7 @@ def get_snapshots_by_filter(
         WHERE {where}
         ORDER BY s.market_id, s.snapshot_at
     """
-    return pd.read_sql(sql, get_engine(), params=params)
+    return pd.read_sql(sql, get_engine(), params=tuple(params))
 
 
 # Specialized
@@ -542,4 +564,40 @@ def get_resolved_market_ids(conn) -> set:
     with conn.cursor() as cur:
         cur.execute("SELECT market_id FROM markets WHERE resolved = true")
         return {row[0] for row in cur.fetchall()}
+    
+
+def get_latest_snapshots(active_only: bool = True, columns=None) -> pd.DataFrame:
+    """
+    Latest snapshot per market (most recent row only, not full history) joined
+    to market title. Uses DISTINCT ON, which the general snapshot fetchers don't
+    do — hence its own function.
+
+    Parameters
+    ----------
+    active_only : bool
+        If True, restrict to currently active, open markets.
+    columns : list[str] or str, optional
+        Snapshot columns to return (title is always included). Default set used
+        if omitted.
+    """
+    # snapshot columns (prefixed s.), plus m.title always
+    col_sql = _resolve_columns(columns, _SNAPSHOT_COLS_ALL,
+                               _SNAPSHOT_COLS_DEFAULT, prefix="s.")
+
+    conditions = []
+    params = []
+    if active_only:
+        conditions.append("m.active = true")
+        conditions.append("m.closed = false")
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    sql = f"""
+        SELECT DISTINCT ON (s.market_id)
+            {col_sql}, m.title
+        FROM market_snapshots s
+        JOIN markets m ON m.market_id = s.market_id
+        {where}
+        ORDER BY s.market_id, s.snapshot_at DESC
+    """
+    return pd.read_sql(sql, get_engine(), params=params if params else None)
     

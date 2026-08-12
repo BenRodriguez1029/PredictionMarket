@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from analysis.time_series import to_logit
 import config
 
 
@@ -22,6 +23,58 @@ def drop_invalid_quotes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def drop_post_resolution(df_all: pd.DataFrame,
+                         resolution_times: pd.Series = None) -> pd.DataFrame:
+    """
+    Drop snapshots taken at or after each market's resolution time. For resolved
+    markets these rows are junk (boundary-snapped, no real dynamics) AND a
+    look-ahead hazard (price already reflects the known outcome).
+
+    resolution_times : Series indexed by market_id giving each market's
+        resolution_time (COALESCE(closed_time, event_time)). If None, fetches
+        it via load_resolved_markets for the markets present in df_all.
+
+    Markets with no resolution time (still-open markets) keep all their rows.
+    """
+    from db.load import load_resolved_markets
+
+    if resolution_times is None:
+        resolved = load_resolved_markets()
+        resolution_times = resolved.set_index("market_id")["resolution_time"]
+
+    df = df_all.copy()
+    # map each row's market to its resolution time (NaT if market not resolved)
+    df["_res_time"] = df["market_id"].map(resolution_times)
+
+    before = len(df)
+    # keep rows that are either from unresolved markets (_res_time is NaT)
+    # or strictly before their resolution time
+    keep = df["_res_time"].isna() | (df["snapshot_at"] < df["_res_time"])
+    df = df[keep].drop(columns=["_res_time"])
+
+    print(f"[post-resolution] dropped {before - len(df)} rows at/after resolution")
+    return df
+
+
+def filter_consistently_active(df: pd.DataFrame, percent_move_threshold: float = 0.50, median_move_threshold: float = 0.01) -> pd.DataFrame:
+    """
+    Keep only markets that were active for the entire history of the snapshot DataFrame.
+    """
+    valid_ids = []
+    dropped = 0
+    for market_id, g in df.groupby("market_id"):
+        logit = to_logit(g["mid_price"].values)
+        diff = np.diff(logit)
+        if np.mean(np.abs(diff) < 1e-9) > percent_move_threshold and np.median(np.abs(diff)) > median_move_threshold:
+            valid_ids.append(market_id)
+        else:
+            dropped += 1
+    
+    df = df[df["market_id"].isin(valid_ids)].copy()
+    print(f"[filter_consistently_active] dropped {dropped} markets not consistently active")
+    return df
+
+
 def filter_active(df: pd.DataFrame) -> pd.DataFrame:
     """
     Keep only markets currently active and not closed.
@@ -30,6 +83,7 @@ def filter_active(df: pd.DataFrame) -> pd.DataFrame:
     df = df[(df["active"] == True) & (df["closed"] == False)].copy()
     print(f"[filter] dropped {before - len(df)} inactive/closed rows")
     return df
+
 
 def filter_closed(df: pd.DataFrame) -> pd.DataFrame:
     """
